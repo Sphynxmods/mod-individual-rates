@@ -307,19 +307,6 @@ with the XP source rates.
 
 Existing `individual_rates` rows are never overwritten.
 
-## Release Checklist
-
-Before publishing a GitHub release:
-
-1. Confirm the module directory is named `mod-individual-rates`.
-2. Confirm `CMakeLists.txt` is present.
-3. Confirm `conf/individual_rates.conf.dist` contains the desired defaults.
-4. Confirm database SQL is present under `data/sql/`.
-5. Re-run CMake and rebuild `worldserver` in a clean AzerothCore checkout.
-6. Start `worldserver` once and confirm the database updater applies module SQL.
-7. Log in and run `.rate help`, `.rate list`, `.rate set xp.kill 2`, and
-   `.rate reset xp.kill`.
-
 ## License
 
 GPL-2.0-or-later. See `LICENSE`.
