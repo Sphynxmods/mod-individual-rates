@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.dylib
+
+# Local AzerothCore config
+conf/*.conf
+!conf/*.conf.dist
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs / temporary files
+*.log
+*.tmp
+*.bak

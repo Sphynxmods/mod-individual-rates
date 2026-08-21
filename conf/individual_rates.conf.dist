@@ -1,0 +1,1833 @@
+[worldserver]
+
+###################################################################################################
+# INDIVIDUAL RATES MODULE
+#
+# This module lets players choose their own progression and reward multipliers with `.rate`.
+# It is intended as a replacement for the older individual XP-only module: XP rates are still
+# supported, but the system now also covers skill gains, reputation, PvP rewards, selected item
+# drop chances, and loot money.
+#
+# Important worldconfig warning:
+#   This module multiplies the values produced by AzerothCore after worldserver.conf rates are
+#   applied. For predictable player-facing rates, set the matching worldserver.conf rates to x1
+#   and let this module control personal rates.
+#
+#   Example: if worldserver.conf Rate.XP.Kill = 2 and a player sets xp.kill = 3, the final kill XP
+#   is effectively x6. This is usually not what owners want for an individual rate system.
+#
+# How it works:
+#   - Server owners decide which categories and individual rates are available.
+#   - A category key is a bulk command target, not a separately stored rate. Example:
+#       `.rate set xp 5` sets all enabled XP rates to x5.
+#       `.rate set xp.bg.av 2` can then set only Alterac Valley kill XP to x2.
+#       The individual value takes over because the category command only bulk-writes rates.
+#   - Players can only see and change rates that are enabled in this config.
+#   - `Enabled` controls command availability. It does not directly force a rate value.
+#   - `Default` controls the value used when no account or character override exists.
+#   - Decimal values are allowed in commands and config, such as 1.3, 1.5, or 0.5.
+#     Use a dot for decimals, not a comma.
+#   - Account rates are the default player-facing path in this config.
+#   - Character-specific overrides can be enabled separately. When a character override exists for
+#     a rate, it has higher priority than the account value for that same rate.
+#   - Account unlocks and MaxLevel caps are separate systems. Account unlocks use the highest
+#     character level on the account; MaxLevel caps use the current character's level.
+#
+# Player commands:
+#   .rate help
+#       Show the in-game command summary.
+#
+#   .rate view
+#       Show the player's currently changeable rates. Disabled categories/rates are hidden.
+#
+#   .rate list
+#       Show available rate keys and category keys.
+#
+#   .rate set <key|category> <value>
+#       Set one rate, or set all enabled rates in a category. By default this writes account rates.
+#       Example: .rate set xp.kill 2
+#       Example: .rate set xp 5
+#
+#   .rate setall <category> <value>
+#       Set all enabled rates in a category.
+#       Example: .rate setall drops 2
+#
+#   .rate account set <key|category> <value>
+#       Set an account-wide override when IndividualRates.AccountRates.Enabled is 1.
+#
+#   .rate character set <key|category> <value>
+#       Set a character-specific override when IndividualRates.CharacterRates.Enabled is 1.
+#       Character overrides have higher priority than account values.
+#
+#   .rate default <key>
+#       Reset one rate for the default storage target used by `.rate set`.
+#
+#   .rate character reset <key|category>
+#       Remove one character-specific override so the character uses the account value or server
+#       default again.
+#
+#   .rate reset <key|category>
+#       Remove account and character overrides so the server-configured Default is used.
+#
+#   .rate enable <key> / .rate disable <key>
+#       Toggle one personal rate on or off. `.rate on` and `.rate off` are aliases.
+#
+#   .rate lock / .rate unlock
+#       Disable or enable XP gain for the character. In account-rate mode, the XP lock is shared
+#       across the account.
+#
+# XP level bracket defaults:
+#   The XP level bracket rates multiply with XP source rates. For example, if xp.kill is x2 and
+#   xp.level.20-29 is x0.5, kill XP from level 20 through 29 becomes x1 overall.
+#
+#   Enabled only allows players to use the bracket command. The Default value still applies when
+#   no player override exists, so owners can make level brackets automatically change leveling
+#   speed by changing each bracket's Default.
+#
+# Owner controls:
+#   Every category and every individual rate can define:
+#
+#   Enabled
+#       1 - Players may view, enable/disable, and change this rate.
+#       0 - The rate is unavailable to players, even if saved character data exists.
+#
+#   Default
+#       The value assigned to new characters and restored by `.rate default <key>`.
+#       A value of 1 means normal AzerothCore behavior after the worldserver.conf rate is applied.
+#
+#   Max
+#       The highest value players may set with `.rate set <key> <value>`.
+#
+#   Unlock.Enabled / Unlock.Level / Unlock.Steps
+#       Optional account progression requirement. This is separate from MaxLevel.
+#       Requires IndividualRates.AccountUnlocks.Enabled = 1.
+#       Uses the highest-level character on the account.
+#       Steps use Rate:RequiredAccountLevel, for example:
+#           2:10,3:20,4:30,5:40,6:50,7:60,8:70,9:80
+#
+#       Keep Steps empty to use Unlock.Level. If Steps is filled in, Steps always takes priority
+#       over Unlock.Level.
+#
+#   MaxLevel.Enabled / MaxLevel.Level / MaxLevel.MaxRate
+#       Optional current-character cap. This is separate from AccountUnlocks.
+#       Once this character reaches MaxLevel.Level, the allowed maximum for that rate is lowered
+#       to MaxLevel.MaxRate. Saved values above that cap are automatically clamped while the cap is
+#       active; saved values at or below the cap keep their original value.
+#
+# What is included:
+#   - XP from kills, quests, Dungeon Finder quests, exploration, battleground kills, and
+#     battleground bonus XP.
+#   - XP level brackets: 1-9, 10-19, 20-29, 30-39, 40-49, 50-59, 60-69, 70-79, and 80.
+#   - Weapon and defense skill gain.
+#   - Profession skill gain for crafting, gathering, primary, secondary, herbalism, mining,
+#     skinning, and fishing.
+#   - Reputation split into global, kill, quest, and other sources.
+#   - Honor and arena point rewards where the available hooks expose them.
+#   - Drop chance multipliers for quality groups, quest items, recipes, pets, mounts, referenced
+#     loot, and a general drop chance multiplier.
+#   - Loot money.
+#   - Account rates, optional character-specific overrides, account unlock ladders, per-character
+#     max-level caps, and XP locking.
+###################################################################################################
+
+###################################################################################################
+# MODULE OPTIONS
+###################################################################################################
+
+#
+# IndividualRates.Enabled
+#
+#   Description:
+#       Master switch for the module.
+#
+#   Default:
+#       1 - Enabled
+#
+IndividualRates.Enabled = 1
+
+#
+# IndividualRates.Announce
+#
+#   Description:
+#       Shows a short login message telling players the Individual Rates module is available.
+#
+#   Default:
+#       1 - Enabled
+#
+IndividualRates.Announce = 1
+
+#
+# IndividualRates.AnnounceRatesOnLogin
+#
+#   Description:
+#       Shows the player's currently enabled, supported rates at login.
+#       Disable this if the login chat becomes too noisy.
+#
+#   Default:
+#       1 - Enabled
+#
+IndividualRates.AnnounceRatesOnLogin = 1
+
+#
+# IndividualRates.MigrateIndividualXp.Enabled
+#
+#   Description:
+#       Compatibility import for servers replacing mod-individual-xp.
+#       This only runs when IndividualRates.CharacterRates.Enabled is 1.
+#
+#       If the old `individualxp` character table exists and a character has no rows yet in the
+#       new `individual_rates` table, the old `XPRate` value is copied into the supported XP source
+#       rates as character overrides: xp.kill, xp.quest, xp.quest.df, xp.explore,
+#       xp.battlegroundbonus, and battleground kill XP rates.
+#
+#       XP level bracket rates are left at their defaults because they multiply with source rates.
+#
+#       Existing Individual Rates rows are never overwritten.
+#
+#   Default:
+#       1 - Enabled
+#
+IndividualRates.MigrateIndividualXp.Enabled = 1
+
+#
+# IndividualRates.CharacterRates.Enabled
+#
+#   Description:
+#       Enables per-character rate overrides.
+#
+#       When this is 0:
+#           `.rate character set ...` is unavailable.
+#           Saved rows in `individual_rates` are ignored.
+#           Account rates, when enabled, become the normal player-selected values.
+#
+#       When this is 1:
+#           `.rate character set <key|category> <value>` stores a character-specific override.
+#           Character overrides have higher priority than account rates.
+#           `.rate character default <key>` removes a character override and falls back to the
+#           account value or server default.
+#
+#   Default:
+#       0 - Character-specific overrides are disabled.
+#
+IndividualRates.CharacterRates.Enabled = 0
+
+#
+# IndividualRates.AccountRates.Enabled
+#
+#   Description:
+#       Enables account-wide rate overrides.
+#
+#       When this is 0:
+#           `.rate set <key> <value>` can only work if IndividualRates.SetCommand.AccountDefault
+#           is 0 and IndividualRates.CharacterRates.Enabled is 1.
+#           `.rate account set ...` is unavailable.
+#
+#       When this is 1:
+#           `.rate set <key> <value>` stores an account-wide value by default.
+#           `.rate account set <key|category> <value>` stores an account-wide override.
+#           Account values are shared by all characters on the account.
+#           Character overrides still have higher priority when character rates are enabled.
+#
+#   Default:
+#       1 - Account-wide overrides are available in this config.
+#
+IndividualRates.AccountRates.Enabled = 1
+
+#
+# IndividualRates.SetCommand.AccountDefault
+#
+#   Description:
+#       Chooses what `.rate set`, `.rate setall`, `.rate default`, `.rate enable`, and
+#       `.rate disable` modify.
+#
+#       1 - These commands modify account rates. This is the recommended account-first setup.
+#       0 - These commands modify character rates. This requires IndividualRates.CharacterRates.
+#
+#       The explicit commands always keep their target:
+#           `.rate account set ...` always writes account rates.
+#           `.rate character set ...` always writes character overrides.
+#
+#   Default:
+#       1 - `.rate set` uses account rates.
+#
+IndividualRates.SetCommand.AccountDefault = 1
+
+#
+# IndividualRates.AccountUnlocks.Enabled
+#
+#   Description:
+#       Global master switch for all category and individual Unlock settings.
+#
+#       This exists so owners can keep Unlock settings configured per category or per rate, while
+#       still turning the whole account-unlock system on or off in one place.
+#
+#       Account unlocks use the highest-level character on the account. They are designed for
+#       realms where the first character levels at normal/default rates, then later characters on
+#       that same account can unlock higher rates.
+#
+#       This does not make rates account-wide by itself. Use IndividualRates.AccountRates.Enabled
+#       for account-wide storage. This also does not control MaxLevel caps; MaxLevel works even
+#       when AccountUnlocks is 0.
+#
+#       Simple mode example:
+#           IndividualRates.Rate.XP.Kill.Unlock.Enabled = 1
+#           IndividualRates.Rate.XP.Kill.Unlock.Level = 80
+#           IndividualRates.Rate.XP.Kill.Unlock.Steps =
+#
+#       With that setup, players can set xp.kill above Default only after one character on the
+#       account reaches level 80. Once unlocked, all characters on that account can use the higher
+#       xp.kill rate, up to the configured Max.
+#
+#       If IndividualRates.Rate.XP.Kill.Unlock.Enabled = 0, that rate's unlock rule is ignored.
+#       The player may use the rate up to Max unless a category unlock or MaxLevel cap applies.
+#
+#       Step mode example:
+#           IndividualRates.Rate.XP.Kill.Unlock.Steps = 2:10,3:20,4:30,5:40,6:50,7:60,8:70,9:80
+#
+#       Each step is RateX:UnlockLevel. If one character on the account reaches the UnlockLevel,
+#       that RateX becomes available to the account and all other characters on it. With the
+#       example above, level 10 unlocks x2, level 20 unlocks x3, and level 80 unlocks x9.
+#
+#       Keep Unlock.Steps empty to use Unlock.Level. If Unlock.Steps is filled in, it always takes
+#       priority over Unlock.Level. Rate-specific unlocks take precedence over category unlocks.
+#
+#   Default:
+#       0 - Unlock requirements are ignored.
+#
+IndividualRates.AccountUnlocks.Enabled = 0
+
+###################################################################################################
+# CATEGORY OPTIONS
+#
+# These switches disable whole groups at the top level. Disabled categories are hidden from
+# `.rate view` / `.rate list` and cannot be changed with `.rate set`.
+#
+# Category commands:
+#   .rate set xp 5
+#       Sets every enabled individual rate in the XP category to x5.
+#
+#   .rate set xplevel 0.5
+#       Sets every enabled XP level bracket to x0.5.
+#
+#   .rate character set drops 2
+#       Sets character-specific drop overrides when character rates are enabled.
+#
+#   .rate character reset drops
+#       Removes character-specific drop overrides and falls back to account rates/defaults.
+#
+#   .rate reset drops
+#       Removes both account and character drop overrides and returns to server defaults.
+#
+# For every category below:
+#   Enabled
+#       1 lets players view and change rates in this category.
+#       0 hides every rate in this category and blocks player changes.
+#
+#   Unlock.Enabled / Unlock.Level / Unlock.Steps
+#       Optional account-wide progression gate. It uses the highest-level character on the account
+#       to decide how high players may set rates in this category.
+#       This requires IndividualRates.AccountUnlocks.Enabled = 1.
+#
+#   MaxLevel.Enabled / MaxLevel.Level / MaxLevel.MaxRate
+#       Optional per-character cap. Once this character reaches MaxLevel.Level, rates in this
+#       category cannot go above MaxLevel.MaxRate. This cap applies even when account unlocks are
+#       disabled.
+#
+###################################################################################################
+
+#
+# IndividualRates.Category.XP
+#
+#   Controls XP source rates such as xp.kill, xp.quest, xp.explore, battleground XP, and
+#   battleground kill XP. These rates are separate from the per-level XP multipliers below.
+#
+#   Commands:
+#       .rate set xp <0..rate max>
+#       .rate account set xp <0..rate max>
+#       .rate character set xp <0..rate max>
+#
+#   Defaults:
+#       Enabled = 1, Unlock = off, Unlock.Level = 80, Unlock.Steps = empty,
+#       MaxLevel = off, MaxLevel.Level = 70, MaxLevel.MaxRate = 3.
+#
+IndividualRates.Category.XP.Enabled = 1
+
+IndividualRates.Category.XP.Unlock.Enabled = 0
+IndividualRates.Category.XP.Unlock.Level = 80
+IndividualRates.Category.XP.Unlock.Steps =
+
+IndividualRates.Category.XP.MaxLevel.Enabled = 0
+IndividualRates.Category.XP.MaxLevel.Level = 70
+IndividualRates.Category.XP.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.XP.Level
+#
+#   Controls per-level XP multipliers from xp.level.1-9 through xp.level.80. These multiply with
+#   the selected XP source rate, so they can be used for bracket-based progression.
+#
+#   Commands:
+#       .rate set xplevel <0..rate max>
+#       .rate set xp.level.70-79 <0..10>
+#
+#   Defaults:
+#       Enabled = 1, Unlock = off, Unlock.Level = 80, Unlock.Steps = empty,
+#       MaxLevel = off, MaxLevel.Level = 70, MaxLevel.MaxRate = 3.
+#
+IndividualRates.Category.XP.Level.Enabled = 1
+
+IndividualRates.Category.XP.Level.Unlock.Enabled = 0
+IndividualRates.Category.XP.Level.Unlock.Level = 80
+IndividualRates.Category.XP.Level.Unlock.Steps =
+
+IndividualRates.Category.XP.Level.MaxLevel.Enabled = 0
+IndividualRates.Category.XP.Level.MaxLevel.Level = 70
+IndividualRates.Category.XP.Level.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.CombatSkills
+#
+#   Controls weapon and defense skill gain rates. Disable this category to hide both combat skill
+#   rates from player commands.
+#
+#   Commands:
+#       .rate set combat <0..10>
+#       .rate set skill.weapon <0..10>
+#       .rate set skill.defense <0..10>
+#
+IndividualRates.Category.CombatSkills.Enabled = 1
+
+IndividualRates.Category.CombatSkills.Unlock.Enabled = 0
+IndividualRates.Category.CombatSkills.Unlock.Level = 80
+IndividualRates.Category.CombatSkills.Unlock.Steps =
+
+IndividualRates.Category.CombatSkills.MaxLevel.Enabled = 0
+IndividualRates.Category.CombatSkills.MaxLevel.Level = 70
+IndividualRates.Category.CombatSkills.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.Professions
+#
+#   Controls profession skill gain rates, including gathering, crafting, primary, secondary, and
+#   profession-specific entries. Crafted item output is not multiplied by this category.
+#
+#   Commands:
+#       .rate set professions <0..10>
+#       .rate set skill.gathering <0..10>
+#       .rate set skill.crafting <0..10>
+#
+IndividualRates.Category.Professions.Enabled = 1
+
+IndividualRates.Category.Professions.Unlock.Enabled = 0
+IndividualRates.Category.Professions.Unlock.Level = 80
+IndividualRates.Category.Professions.Unlock.Steps =
+
+IndividualRates.Category.Professions.MaxLevel.Enabled = 0
+IndividualRates.Category.Professions.MaxLevel.Level = 70
+IndividualRates.Category.Professions.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.Reputation
+#
+#   Controls global reputation plus kill, quest, and other reputation source rates. Disable this
+#   category to force all personal reputation rates back to server defaults.
+#
+#   Commands:
+#       .rate set reputation <0..10>
+#       .rate set rep.global <0..10>
+#
+IndividualRates.Category.Reputation.Enabled = 1
+
+IndividualRates.Category.Reputation.Unlock.Enabled = 0
+IndividualRates.Category.Reputation.Unlock.Level = 80
+IndividualRates.Category.Reputation.Unlock.Steps =
+
+IndividualRates.Category.Reputation.MaxLevel.Enabled = 0
+IndividualRates.Category.Reputation.MaxLevel.Level = 70
+IndividualRates.Category.Reputation.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.PvP
+#
+#   Controls PvP reward rates, including honor and arena points.
+#
+#   Commands:
+#       .rate set pvp <0..10>
+#       .rate set honor <0..10>
+#       .rate set arenapoints <0..10>
+#
+IndividualRates.Category.PvP.Enabled = 1
+
+IndividualRates.Category.PvP.Unlock.Enabled = 0
+IndividualRates.Category.PvP.Unlock.Level = 80
+IndividualRates.Category.PvP.Unlock.Steps =
+
+IndividualRates.Category.PvP.MaxLevel.Enabled = 0
+IndividualRates.Category.PvP.MaxLevel.Level = 70
+IndividualRates.Category.PvP.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.Drops
+#
+#   Controls personal drop chance rates such as item quality, quest items, recipes, pets, mounts,
+#   referenced loot, and the general drop chance multiplier.
+#
+#   Commands:
+#       .rate set drops <0..20>
+#       .rate set drop.chance <0..20>
+#       .rate set drop.mount <0..20>
+#
+#   MaxLevel example:
+#       The default below enables a level 70 cap for the whole Drops category. Once the current
+#       character reaches level 70, drop rates in this category cannot act above x3. If a saved
+#       value is higher than x3, the module automatically uses x3 while the cap is active. Values
+#       already at or below x3 keep their original value.
+#
+IndividualRates.Category.Drops.Enabled = 1
+
+IndividualRates.Category.Drops.Unlock.Enabled = 0
+IndividualRates.Category.Drops.Unlock.Level = 80
+IndividualRates.Category.Drops.Unlock.Steps =
+
+IndividualRates.Category.Drops.MaxLevel.Enabled = 1
+IndividualRates.Category.Drops.MaxLevel.Level = 70
+IndividualRates.Category.Drops.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.Money
+#
+#   Controls personal money rates, currently loot money.
+#
+#   Commands:
+#       .rate set money <0..20>
+#       .rate set drop.money <0..20>
+#
+IndividualRates.Category.Money.Enabled = 1
+
+IndividualRates.Category.Money.Unlock.Enabled = 0
+IndividualRates.Category.Money.Unlock.Level = 80
+IndividualRates.Category.Money.Unlock.Steps =
+
+IndividualRates.Category.Money.MaxLevel.Enabled = 0
+IndividualRates.Category.Money.MaxLevel.Level = 70
+IndividualRates.Category.Money.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# EXPERIENCE RATES
+#
+# Each individual rate below has three basic controls:
+#   Enabled - whether players can see and change this exact rate with commands.
+#   Default - the value used for new characters and `.rate default <key>`.
+#   Max - the normal maximum value players may set.
+#
+# Player command syntax for every individual rate:
+#   .rate set <player key> <value>
+#       Sets the default storage target. In this config that means account rates.
+#
+#   .rate account set <player key> <value>
+#       Sets the account value directly.
+#
+#   .rate character set <player key> <value>
+#       Sets a character override. Character overrides take priority over account values.
+#
+#   .rate character reset <player key>
+#       Removes the character override and returns that character to the account value/default.
+#
+#   .rate reset <player key>
+#       Removes account and character overrides and returns to this config's Default.
+#
+# Values:
+#   Players may use any value from 0 up to that rate's allowed maximum. The allowed maximum is the
+#   lowest active limit from Max, Account Unlocks, and MaxLevel. Decimal values like 1.3 and 0.5
+#   are valid.
+#
+# Each individual rate also has optional unlock and max-level controls:
+#   Unlock.Enabled - use account progression for this exact rate.
+#   Unlock.Level - require one character on the account to reach this level before Max is allowed.
+#   Unlock.Steps - unlock specific maximum rates at specific account levels. Empty means use
+#                  Unlock.Level. If filled in, this takes priority over Unlock.Level.
+#   MaxLevel.Enabled - lower the allowed maximum when this character reaches MaxLevel.Level.
+#   MaxLevel.Level - the character level where the lower maximum starts.
+#   MaxLevel.MaxRate - the maximum allowed after that character reaches MaxLevel.Level.
+#
+# Rate-specific Unlock and MaxLevel settings override the category settings above when enabled.
+###################################################################################################
+
+#
+#   Optional account unlock examples:
+#
+#       Require one character on the account to be level 80 before xp.kill can go above Default:
+#           IndividualRates.Rate.XP.Kill.Unlock.Enabled = 1
+#           IndividualRates.Rate.XP.Kill.Unlock.Level = 80
+#
+#       Unlock specific xp.kill rates at specific account levels:
+#           IndividualRates.Rate.XP.Kill.Unlock.Enabled = 1
+#           IndividualRates.Rate.XP.Kill.Unlock.Steps = 2:10,3:20,4:30,5:40,6:50,7:60,8:70,9:80
+#
+#       Limit only xp.kill to MaxLevel.MaxRate once this character reaches MaxLevel.Level:
+#           IndividualRates.Rate.XP.Kill.MaxLevel.Enabled = 1
+#           IndividualRates.Rate.XP.Kill.MaxLevel.Level = 70
+#           IndividualRates.Rate.XP.Kill.MaxLevel.MaxRate = 3
+#
+
+#
+# IndividualRates.Rate.XP.Kill
+#
+#   Player key:
+#       xp.kill
+#
+#   Description:
+#       Personal XP multiplier for normal creature kills outside battleground-specific XP maps.
+#       This covers XP awarded through the normal kill XP source, such as outdoor and dungeon
+#       non-player creature kills. Battleground honorable-kill XP uses the battleground-specific
+#       XP rates below instead.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Kill.Enabled = 1
+IndividualRates.Rate.XP.Kill.Default = 1
+IndividualRates.Rate.XP.Kill.Max = 10
+
+IndividualRates.Rate.XP.Kill.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Kill.Unlock.Level = 80
+IndividualRates.Rate.XP.Kill.Unlock.Steps =
+
+IndividualRates.Rate.XP.Kill.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Kill.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Kill.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Quest
+#
+#   Player key:
+#       xp.quest
+#
+#   Description:
+#       Personal XP multiplier for normal quest turn-ins.
+#       The quest window and the actual reward are both adjusted by this module.
+#       Dungeon Finder/LFG quest rewards use xp.quest.df instead.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Quest.Enabled = 1
+IndividualRates.Rate.XP.Quest.Default = 1
+IndividualRates.Rate.XP.Quest.Max = 10
+
+IndividualRates.Rate.XP.Quest.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Quest.Unlock.Level = 80
+IndividualRates.Rate.XP.Quest.Unlock.Steps =
+
+IndividualRates.Rate.XP.Quest.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Quest.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Quest.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Quest.DF
+#
+#   Player key:
+#       xp.quest.df
+#
+#   Description:
+#       Personal XP multiplier for Dungeon Finder/LFG quest rewards.
+#       This is separate from normal quest turn-ins so owners can keep dungeon finder rewards on a
+#       different progression curve.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Quest.DF.Enabled = 1
+IndividualRates.Rate.XP.Quest.DF.Default = 1
+IndividualRates.Rate.XP.Quest.DF.Max = 10
+
+IndividualRates.Rate.XP.Quest.DF.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Quest.DF.Unlock.Level = 80
+IndividualRates.Rate.XP.Quest.DF.Unlock.Steps =
+
+IndividualRates.Rate.XP.Quest.DF.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Quest.DF.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Quest.DF.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Explore
+#
+#   Player key:
+#       xp.explore
+#
+#   Description:
+#       Personal XP multiplier for discovering/exploring areas.
+#       This applies when the core awards XP from the exploration XP source.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Explore.Enabled = 1
+IndividualRates.Rate.XP.Explore.Default = 1
+IndividualRates.Rate.XP.Explore.Max = 10
+
+IndividualRates.Rate.XP.Explore.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Explore.Unlock.Level = 80
+IndividualRates.Rate.XP.Explore.Unlock.Steps =
+
+IndividualRates.Rate.XP.Explore.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Explore.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Explore.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundBonus
+#
+#   Player key:
+#       xp.battlegroundbonus
+#
+#   Description:
+#       Personal XP multiplier for bonus battleground XP derived from honor rewards.
+#       This is separate from battleground honorable-kill XP.
+#       Use this for end-of-objective or bonus-style battleground XP that does not come from
+#       killing another player.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundBonus.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundBonus.Default = 1
+IndividualRates.Rate.XP.BattlegroundBonus.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundBonus.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundBonus.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundBonus.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundBonus.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundBonus.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundBonus.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillAV
+#
+#   Player key:
+#       xp.bg.av
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Alterac Valley.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillAV.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillAV.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillAV.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillAV.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillAV.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillAV.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillAV.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillAV.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillAV.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillWSG
+#
+#   Player key:
+#       xp.bg.wsg
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Warsong Gulch.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillWSG.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillWSG.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillWSG.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillWSG.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillWSG.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillWSG.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillWSG.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillWSG.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillWSG.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillAB
+#
+#   Player key:
+#       xp.bg.ab
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Arathi Basin.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillAB.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillAB.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillAB.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillAB.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillAB.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillAB.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillAB.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillAB.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillAB.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillEOTS
+#
+#   Player key:
+#       xp.bg.eots
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Eye of the Storm.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillEOTS.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillEOTS.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillEOTS.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillEOTS.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillSOTA
+#
+#   Player key:
+#       xp.bg.sota
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Strand of the Ancients.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillSOTA.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillSOTA.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillSOTA.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillSOTA.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.BattlegroundKillIC
+#
+#   Player key:
+#       xp.bg.ic
+#
+#   Description:
+#       Personal XP multiplier for honorable kills in Isle of Conquest.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.BattlegroundKillIC.Enabled = 1
+IndividualRates.Rate.XP.BattlegroundKillIC.Default = 1
+IndividualRates.Rate.XP.BattlegroundKillIC.Max = 10
+
+IndividualRates.Rate.XP.BattlegroundKillIC.Unlock.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillIC.Unlock.Level = 80
+IndividualRates.Rate.XP.BattlegroundKillIC.Unlock.Steps =
+
+IndividualRates.Rate.XP.BattlegroundKillIC.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.BattlegroundKillIC.MaxLevel.Level = 70
+IndividualRates.Rate.XP.BattlegroundKillIC.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# EXPERIENCE LEVEL BRACKETS
+#
+# These are player-changeable XP multipliers for the character's current level bracket.
+# They multiply together with the XP source rates above.
+#
+# Example:
+#   Rate.XP.Kill is 1 globally.
+#   A player sets `.rate set xp.kill 2`.
+#   The same player sets `.rate set xp.level.20-29 0.5`.
+#   While level 20-29, kill XP becomes 1x normal because 2 * 0.5 = 1.
+#
+# This makes it possible to run smooth progression curves such as:
+#   1-9 faster, 10-59 normal, 60-80 slower
+# without asking players to manually change one global XP number every few levels.
+###################################################################################################
+
+#
+# IndividualRates.Rate.XP.Level.1-9
+#
+#   Player key:
+#       xp.level.1-9
+#
+#   Description:
+#       Personal XP multiplier while the character is level 1 through 9.
+#       Applies to supported player XP sources: kill, quest, dungeon finder quest, exploration,
+#       battleground honorable-kill XP, and battleground bonus XP.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.1-9.Enabled = 1
+IndividualRates.Rate.XP.Level.1-9.Default = 1
+IndividualRates.Rate.XP.Level.1-9.Max = 10
+
+IndividualRates.Rate.XP.Level.1-9.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.1-9.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.1-9.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.1-9.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.1-9.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.1-9.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.10-19
+#
+#   Player key:
+#       xp.level.10-19
+#
+#   Description:
+#       Personal XP multiplier while the character is level 10 through 19.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.10-19.Enabled = 1
+IndividualRates.Rate.XP.Level.10-19.Default = 1
+IndividualRates.Rate.XP.Level.10-19.Max = 10
+
+IndividualRates.Rate.XP.Level.10-19.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.10-19.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.10-19.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.10-19.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.10-19.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.10-19.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.20-29
+#
+#   Player key:
+#       xp.level.20-29
+#
+#   Description:
+#       Personal XP multiplier while the character is level 20 through 29.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.20-29.Enabled = 1
+IndividualRates.Rate.XP.Level.20-29.Default = 1
+IndividualRates.Rate.XP.Level.20-29.Max = 10
+
+IndividualRates.Rate.XP.Level.20-29.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.20-29.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.20-29.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.20-29.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.20-29.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.20-29.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.30-39
+#
+#   Player key:
+#       xp.level.30-39
+#
+#   Description:
+#       Personal XP multiplier while the character is level 30 through 39.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.30-39.Enabled = 1
+IndividualRates.Rate.XP.Level.30-39.Default = 1
+IndividualRates.Rate.XP.Level.30-39.Max = 10
+
+IndividualRates.Rate.XP.Level.30-39.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.30-39.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.30-39.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.30-39.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.30-39.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.30-39.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.40-49
+#
+#   Player key:
+#       xp.level.40-49
+#
+#   Description:
+#       Personal XP multiplier while the character is level 40 through 49.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.40-49.Enabled = 1
+IndividualRates.Rate.XP.Level.40-49.Default = 1
+IndividualRates.Rate.XP.Level.40-49.Max = 10
+
+IndividualRates.Rate.XP.Level.40-49.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.40-49.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.40-49.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.40-49.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.40-49.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.40-49.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.50-59
+#
+#   Player key:
+#       xp.level.50-59
+#
+#   Description:
+#       Personal XP multiplier while the character is level 50 through 59.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.50-59.Enabled = 1
+IndividualRates.Rate.XP.Level.50-59.Default = 1
+IndividualRates.Rate.XP.Level.50-59.Max = 10
+
+IndividualRates.Rate.XP.Level.50-59.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.50-59.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.50-59.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.50-59.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.50-59.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.50-59.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.60-69
+#
+#   Player key:
+#       xp.level.60-69
+#
+#   Description:
+#       Personal XP multiplier while the character is level 60 through 69.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.60-69.Enabled = 1
+IndividualRates.Rate.XP.Level.60-69.Default = 1
+IndividualRates.Rate.XP.Level.60-69.Max = 10
+
+IndividualRates.Rate.XP.Level.60-69.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.60-69.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.60-69.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.60-69.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.60-69.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.60-69.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.70-79
+#
+#   Player key:
+#       xp.level.70-79
+#
+#   Description:
+#       Personal XP multiplier while the character is level 70 through 79.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.70-79.Enabled = 1
+IndividualRates.Rate.XP.Level.70-79.Default = 1
+IndividualRates.Rate.XP.Level.70-79.Max = 10
+
+IndividualRates.Rate.XP.Level.70-79.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.70-79.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.70-79.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.70-79.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.70-79.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.70-79.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.XP.Level.80
+#
+#   Player key:
+#       xp.level.80
+#
+#   Description:
+#       Personal XP multiplier while the character is level 80 or above.
+#       On a normal WotLK realm, level 80 characters usually receive money instead of XP from
+#       quests, but this bracket still covers any supported XP source that can award XP at 80.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.XP.Level.80.Enabled = 1
+IndividualRates.Rate.XP.Level.80.Default = 1
+IndividualRates.Rate.XP.Level.80.Max = 10
+
+IndividualRates.Rate.XP.Level.80.Unlock.Enabled = 0
+IndividualRates.Rate.XP.Level.80.Unlock.Level = 80
+IndividualRates.Rate.XP.Level.80.Unlock.Steps =
+
+IndividualRates.Rate.XP.Level.80.MaxLevel.Enabled = 0
+IndividualRates.Rate.XP.Level.80.MaxLevel.Level = 70
+IndividualRates.Rate.XP.Level.80.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# SKILL GAIN RATES
+###################################################################################################
+
+###################################################################################################
+# COMBAT SKILL GAIN RATES
+###################################################################################################
+
+#
+# IndividualRates.SkillGain.Defense
+#
+#   Player key:
+#       skill.defense
+#
+#   Description:
+#       Personal multiplier for Defense skill-up point gains from combat.
+#       A value of 0 disables Defense skill-ups for the player.
+#
+#   Default:
+#       Default = 1
+#       Max     = 15
+#
+IndividualRates.SkillGain.Defense.Enabled = 1
+IndividualRates.SkillGain.Defense.Default = 1
+IndividualRates.SkillGain.Defense.Max = 15
+
+IndividualRates.SkillGain.Defense.Unlock.Enabled = 0
+IndividualRates.SkillGain.Defense.Unlock.Level = 80
+IndividualRates.SkillGain.Defense.Unlock.Steps =
+
+IndividualRates.SkillGain.Defense.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Defense.MaxLevel.Level = 70
+IndividualRates.SkillGain.Defense.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Weapon
+#
+#   Player key:
+#       skill.weapon
+#
+#   Description:
+#       Personal multiplier for weapon skill-up point gains from combat.
+#       Includes swords, axes, bows, guns, maces, two-handed weapons, polearms, staves,
+#       unarmed, daggers, thrown, crossbows, wands, and fist weapons.
+#       A value of 0 disables weapon skill-ups for the player.
+#
+#   Default:
+#       Default = 1
+#       Max     = 15
+#
+IndividualRates.SkillGain.Weapon.Enabled = 1
+IndividualRates.SkillGain.Weapon.Default = 1
+IndividualRates.SkillGain.Weapon.Max = 15
+
+IndividualRates.SkillGain.Weapon.Unlock.Enabled = 0
+IndividualRates.SkillGain.Weapon.Unlock.Level = 80
+IndividualRates.SkillGain.Weapon.Unlock.Steps =
+
+IndividualRates.SkillGain.Weapon.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Weapon.MaxLevel.Level = 70
+IndividualRates.SkillGain.Weapon.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# PROFESSION SKILL GAIN RATES
+###################################################################################################
+
+#
+# IndividualRates.SkillGain.Gathering
+#
+#   Player key:
+#       skill.gathering
+#
+#   Description:
+#       Personal multiplier for gathering skill-up point gains, including herbalism, mining,
+#       skinning, lockpicking, jewelcrafting, and inscription gather-style updates.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.SkillGain.Gathering.Enabled = 1
+IndividualRates.SkillGain.Gathering.Default = 1
+IndividualRates.SkillGain.Gathering.Max = 10
+
+IndividualRates.SkillGain.Gathering.Unlock.Enabled = 0
+IndividualRates.SkillGain.Gathering.Unlock.Level = 80
+IndividualRates.SkillGain.Gathering.Unlock.Steps =
+
+IndividualRates.SkillGain.Gathering.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Gathering.MaxLevel.Level = 70
+IndividualRates.SkillGain.Gathering.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Crafting
+#
+#   Player key:
+#       skill.crafting
+#
+#   Description:
+#       Personal multiplier for crafting skill-up point gains.
+#       This affects the amount gained after the core decides a skill-up happened.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.SkillGain.Crafting.Enabled = 1
+IndividualRates.SkillGain.Crafting.Default = 1
+IndividualRates.SkillGain.Crafting.Max = 5
+
+IndividualRates.SkillGain.Crafting.Unlock.Enabled = 0
+IndividualRates.SkillGain.Crafting.Unlock.Level = 80
+IndividualRates.SkillGain.Crafting.Unlock.Steps =
+
+IndividualRates.SkillGain.Crafting.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Crafting.MaxLevel.Level = 70
+IndividualRates.SkillGain.Crafting.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Profession.Primary
+#
+#   Player key:
+#       skill.prof.primary
+#
+#   Description:
+#       Personal multiplier for primary profession skill-up point gains.
+#       This stacks with skill.gathering or skill.crafting.
+#
+IndividualRates.SkillGain.Profession.Primary.Enabled = 1
+IndividualRates.SkillGain.Profession.Primary.Default = 1
+IndividualRates.SkillGain.Profession.Primary.Max = 10
+
+IndividualRates.SkillGain.Profession.Primary.Unlock.Enabled = 0
+IndividualRates.SkillGain.Profession.Primary.Unlock.Level = 80
+IndividualRates.SkillGain.Profession.Primary.Unlock.Steps =
+
+IndividualRates.SkillGain.Profession.Primary.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Profession.Primary.MaxLevel.Level = 70
+IndividualRates.SkillGain.Profession.Primary.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Profession.Secondary
+#
+#   Player key:
+#       skill.prof.secondary
+#
+#   Description:
+#       Personal multiplier for secondary profession skill-up point gains: cooking, first aid,
+#       and fishing. This stacks with skill.gathering or skill.crafting.
+#
+IndividualRates.SkillGain.Profession.Secondary.Enabled = 1
+IndividualRates.SkillGain.Profession.Secondary.Default = 1
+IndividualRates.SkillGain.Profession.Secondary.Max = 10
+
+IndividualRates.SkillGain.Profession.Secondary.Unlock.Enabled = 0
+IndividualRates.SkillGain.Profession.Secondary.Unlock.Level = 80
+IndividualRates.SkillGain.Profession.Secondary.Unlock.Steps =
+
+IndividualRates.SkillGain.Profession.Secondary.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Profession.Secondary.MaxLevel.Level = 70
+IndividualRates.SkillGain.Profession.Secondary.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Gathering.Herbalism
+#
+#   Player key:
+#       skill.gathering.herbalism
+#
+#   Description:
+#       Personal multiplier for herbalism skill-up point gains.
+#
+IndividualRates.SkillGain.Gathering.Herbalism.Enabled = 1
+IndividualRates.SkillGain.Gathering.Herbalism.Default = 1
+IndividualRates.SkillGain.Gathering.Herbalism.Max = 10
+
+IndividualRates.SkillGain.Gathering.Herbalism.Unlock.Enabled = 0
+IndividualRates.SkillGain.Gathering.Herbalism.Unlock.Level = 80
+IndividualRates.SkillGain.Gathering.Herbalism.Unlock.Steps =
+
+IndividualRates.SkillGain.Gathering.Herbalism.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Gathering.Herbalism.MaxLevel.Level = 70
+IndividualRates.SkillGain.Gathering.Herbalism.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Gathering.Mining
+#
+#   Player key:
+#       skill.gathering.mining
+#
+#   Description:
+#       Personal multiplier for mining skill-up point gains.
+#
+IndividualRates.SkillGain.Gathering.Mining.Enabled = 1
+IndividualRates.SkillGain.Gathering.Mining.Default = 1
+IndividualRates.SkillGain.Gathering.Mining.Max = 10
+
+IndividualRates.SkillGain.Gathering.Mining.Unlock.Enabled = 0
+IndividualRates.SkillGain.Gathering.Mining.Unlock.Level = 80
+IndividualRates.SkillGain.Gathering.Mining.Unlock.Steps =
+
+IndividualRates.SkillGain.Gathering.Mining.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Gathering.Mining.MaxLevel.Level = 70
+IndividualRates.SkillGain.Gathering.Mining.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Gathering.Skinning
+#
+#   Player key:
+#       skill.gathering.skinning
+#
+#   Description:
+#       Personal multiplier for skinning skill-up point gains.
+#
+IndividualRates.SkillGain.Gathering.Skinning.Enabled = 1
+IndividualRates.SkillGain.Gathering.Skinning.Default = 1
+IndividualRates.SkillGain.Gathering.Skinning.Max = 10
+
+IndividualRates.SkillGain.Gathering.Skinning.Unlock.Enabled = 0
+IndividualRates.SkillGain.Gathering.Skinning.Unlock.Level = 80
+IndividualRates.SkillGain.Gathering.Skinning.Unlock.Steps =
+
+IndividualRates.SkillGain.Gathering.Skinning.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Gathering.Skinning.MaxLevel.Level = 70
+IndividualRates.SkillGain.Gathering.Skinning.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.SkillGain.Gathering.Fishing
+#
+#   Player key:
+#       skill.gathering.fishing
+#
+#   Description:
+#       Personal multiplier for fishing skill-up point gains.
+#
+IndividualRates.SkillGain.Gathering.Fishing.Enabled = 1
+IndividualRates.SkillGain.Gathering.Fishing.Default = 1
+IndividualRates.SkillGain.Gathering.Fishing.Max = 10
+
+IndividualRates.SkillGain.Gathering.Fishing.Unlock.Enabled = 0
+IndividualRates.SkillGain.Gathering.Fishing.Unlock.Level = 80
+IndividualRates.SkillGain.Gathering.Fishing.Unlock.Steps =
+
+IndividualRates.SkillGain.Gathering.Fishing.MaxLevel.Enabled = 0
+IndividualRates.SkillGain.Gathering.Fishing.MaxLevel.Level = 70
+IndividualRates.SkillGain.Gathering.Fishing.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# REPUTATION AND PVP CURRENCY RATES
+###################################################################################################
+
+#
+# IndividualRates.Rate.Reputation.Global
+#
+#   Player key:
+#       rep.global
+#
+#   Description:
+#       Personal multiplier applied to all reputation gains handled by the core reputation hook.
+#       This stacks with rep.kill, rep.quest, or rep.other depending on the source.
+#
+IndividualRates.Rate.Reputation.Global.Enabled = 1
+IndividualRates.Rate.Reputation.Global.Default = 1
+IndividualRates.Rate.Reputation.Global.Max = 10
+
+IndividualRates.Rate.Reputation.Global.Unlock.Enabled = 0
+IndividualRates.Rate.Reputation.Global.Unlock.Level = 80
+IndividualRates.Rate.Reputation.Global.Unlock.Steps =
+
+IndividualRates.Rate.Reputation.Global.MaxLevel.Enabled = 0
+IndividualRates.Rate.Reputation.Global.MaxLevel.Level = 70
+IndividualRates.Rate.Reputation.Global.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Reputation.Kill
+#
+#   Player key:
+#       rep.kill
+#
+#   Description:
+#       Personal multiplier for reputation gained from creature kills.
+#
+IndividualRates.Rate.Reputation.Kill.Enabled = 1
+IndividualRates.Rate.Reputation.Kill.Default = 1
+IndividualRates.Rate.Reputation.Kill.Max = 10
+
+IndividualRates.Rate.Reputation.Kill.Unlock.Enabled = 0
+IndividualRates.Rate.Reputation.Kill.Unlock.Level = 80
+IndividualRates.Rate.Reputation.Kill.Unlock.Steps =
+
+IndividualRates.Rate.Reputation.Kill.MaxLevel.Enabled = 0
+IndividualRates.Rate.Reputation.Kill.MaxLevel.Level = 70
+IndividualRates.Rate.Reputation.Kill.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Reputation.Quest
+#
+#   Player key:
+#       rep.quest
+#
+#   Description:
+#       Personal multiplier for normal, daily, weekly, monthly, and repeatable quest reputation.
+#
+IndividualRates.Rate.Reputation.Quest.Enabled = 1
+IndividualRates.Rate.Reputation.Quest.Default = 1
+IndividualRates.Rate.Reputation.Quest.Max = 10
+
+IndividualRates.Rate.Reputation.Quest.Unlock.Enabled = 0
+IndividualRates.Rate.Reputation.Quest.Unlock.Level = 80
+IndividualRates.Rate.Reputation.Quest.Unlock.Steps =
+
+IndividualRates.Rate.Reputation.Quest.MaxLevel.Enabled = 0
+IndividualRates.Rate.Reputation.Quest.MaxLevel.Level = 70
+IndividualRates.Rate.Reputation.Quest.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Reputation.Other
+#
+#   Player key:
+#       rep.other
+#
+#   Description:
+#       Personal multiplier for spell/script reputation sources that are neither kills nor quests.
+#
+IndividualRates.Rate.Reputation.Other.Enabled = 1
+IndividualRates.Rate.Reputation.Other.Default = 1
+IndividualRates.Rate.Reputation.Other.Max = 10
+
+IndividualRates.Rate.Reputation.Other.Unlock.Enabled = 0
+IndividualRates.Rate.Reputation.Other.Unlock.Level = 80
+IndividualRates.Rate.Reputation.Other.Unlock.Steps =
+
+IndividualRates.Rate.Reputation.Other.MaxLevel.Enabled = 0
+IndividualRates.Rate.Reputation.Other.MaxLevel.Level = 70
+IndividualRates.Rate.Reputation.Other.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Honor
+#
+#   Player key:
+#       honor
+#
+#   Description:
+#       Personal multiplier for honorable-kill honor rewards.
+#       This hooks player-vs-player kill rewards; scripted/direct honor awards may not all pass
+#       through the same hook.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.Rate.Honor.Enabled = 0
+IndividualRates.Rate.Honor.Default = 1
+IndividualRates.Rate.Honor.Max = 5
+
+IndividualRates.Rate.Honor.Unlock.Enabled = 0
+IndividualRates.Rate.Honor.Unlock.Level = 80
+IndividualRates.Rate.Honor.Unlock.Steps =
+
+IndividualRates.Rate.Honor.MaxLevel.Enabled = 0
+IndividualRates.Rate.Honor.MaxLevel.Level = 70
+IndividualRates.Rate.Honor.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.ArenaPoints
+#
+#   Player key:
+#       arenapoints
+#
+#   Description:
+#       Personal multiplier for weekly arena point distribution while the player is online.
+#       Quest arena point rewards and direct GM/script point changes are not covered by this hook.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.Rate.ArenaPoints.Enabled = 0
+IndividualRates.Rate.ArenaPoints.Default = 1
+IndividualRates.Rate.ArenaPoints.Max = 5
+
+IndividualRates.Rate.ArenaPoints.Unlock.Enabled = 0
+IndividualRates.Rate.ArenaPoints.Unlock.Level = 80
+IndividualRates.Rate.ArenaPoints.Unlock.Steps =
+
+IndividualRates.Rate.ArenaPoints.MaxLevel.Enabled = 0
+IndividualRates.Rate.ArenaPoints.MaxLevel.Level = 70
+IndividualRates.Rate.ArenaPoints.MaxLevel.MaxRate = 3
+
+###################################################################################################
+# LOOT RATES
+#
+# DropChance is the top/global drop chance multiplier for the Drops category. It applies to every
+# item drop chance that passes through the loot roll hook, then the more specific drop rate can
+# apply on top. Example: drop.chance x2 and drop.mount x3 makes mount drops that match the mount
+# filter act as x6.
+###################################################################################################
+
+#
+# IndividualRates.Rate.Drop.Item.Poor
+#
+#   Player key:
+#       drop.poor
+#
+#   Description:
+#       Personal multiplier for poor-quality item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Poor.Enabled = 1
+IndividualRates.Rate.Drop.Item.Poor.Default = 1
+IndividualRates.Rate.Drop.Item.Poor.Max = 10
+
+IndividualRates.Rate.Drop.Item.Poor.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Poor.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Poor.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Poor.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Poor.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Poor.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Normal
+#
+#   Player key:
+#       drop.normal
+#
+#   Description:
+#       Personal multiplier for normal/common item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Normal.Enabled = 1
+IndividualRates.Rate.Drop.Item.Normal.Default = 1
+IndividualRates.Rate.Drop.Item.Normal.Max = 10
+
+IndividualRates.Rate.Drop.Item.Normal.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Normal.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Normal.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Normal.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Normal.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Normal.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Uncommon
+#
+#   Player key:
+#       drop.uncommon
+#
+#   Description:
+#       Personal multiplier for uncommon/green item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Uncommon.Enabled = 1
+IndividualRates.Rate.Drop.Item.Uncommon.Default = 1
+IndividualRates.Rate.Drop.Item.Uncommon.Max = 10
+
+IndividualRates.Rate.Drop.Item.Uncommon.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Uncommon.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Uncommon.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Uncommon.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Uncommon.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Uncommon.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Rare
+#
+#   Player key:
+#       drop.rare
+#
+#   Description:
+#       Personal multiplier for rare/blue item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Rare.Enabled = 0
+IndividualRates.Rate.Drop.Item.Rare.Default = 1
+IndividualRates.Rate.Drop.Item.Rare.Max = 10
+
+IndividualRates.Rate.Drop.Item.Rare.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Rare.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Rare.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Rare.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Rare.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Rare.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Epic
+#
+#   Player key:
+#       drop.epic
+#
+#   Description:
+#       Personal multiplier for epic/purple item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Epic.Enabled = 0
+IndividualRates.Rate.Drop.Item.Epic.Default = 1
+IndividualRates.Rate.Drop.Item.Epic.Max = 10
+
+IndividualRates.Rate.Drop.Item.Epic.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Epic.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Epic.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Epic.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Epic.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Epic.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Legendary
+#
+#   Player key:
+#       drop.legendary
+#
+#   Description:
+#       Personal multiplier for legendary/orange item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.Rate.Drop.Item.Legendary.Enabled = 0
+IndividualRates.Rate.Drop.Item.Legendary.Default = 1
+IndividualRates.Rate.Drop.Item.Legendary.Max = 5
+
+IndividualRates.Rate.Drop.Item.Legendary.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Legendary.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Legendary.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Legendary.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Legendary.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Legendary.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Artifact
+#
+#   Player key:
+#       drop.artifact
+#
+#   Description:
+#       Personal multiplier for artifact-quality item drop chances.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.Rate.Drop.Item.Artifact.Enabled = 0
+IndividualRates.Rate.Drop.Item.Artifact.Default = 1
+IndividualRates.Rate.Drop.Item.Artifact.Max = 5
+
+IndividualRates.Rate.Drop.Item.Artifact.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Artifact.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Artifact.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Artifact.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Artifact.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Artifact.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Referenced
+#
+#   Player key:
+#       drop.referenced
+#
+#   Description:
+#       Personal multiplier for referenced loot template rolls.
+#       Referenced templates are common in world-drop and shared loot structures.
+#
+#   Default:
+#       Default = 1
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Item.Referenced.Enabled = 1
+IndividualRates.Rate.Drop.Item.Referenced.Default = 1
+IndividualRates.Rate.Drop.Item.Referenced.Max = 10
+
+IndividualRates.Rate.Drop.Item.Referenced.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Referenced.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Referenced.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Referenced.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Referenced.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Referenced.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.DropChance
+#
+#   Player key:
+#       drop.chance
+#
+#   Description:
+#       Personal multiplier applied to every item drop chance that passes through the loot roll hook.
+#
+IndividualRates.Rate.DropChance.Enabled = 1
+IndividualRates.Rate.DropChance.Default = 1
+IndividualRates.Rate.DropChance.Max = 10
+
+IndividualRates.Rate.DropChance.Unlock.Enabled = 0
+IndividualRates.Rate.DropChance.Unlock.Level = 80
+IndividualRates.Rate.DropChance.Unlock.Steps =
+
+IndividualRates.Rate.DropChance.MaxLevel.Enabled = 0
+IndividualRates.Rate.DropChance.MaxLevel.Level = 70
+IndividualRates.Rate.DropChance.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.QuestItem
+#
+#   Player key:
+#       drop.questitem
+#
+#   Description:
+#       Personal multiplier for quest-required loot entries.
+#
+IndividualRates.Rate.Drop.QuestItem.Enabled = 0
+IndividualRates.Rate.Drop.QuestItem.Default = 1
+IndividualRates.Rate.Drop.QuestItem.Max = 5
+
+IndividualRates.Rate.Drop.QuestItem.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.QuestItem.Unlock.Level = 80
+IndividualRates.Rate.Drop.QuestItem.Unlock.Steps =
+
+IndividualRates.Rate.Drop.QuestItem.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.QuestItem.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.QuestItem.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Recipe
+#
+#   Player key:
+#       drop.recipe
+#
+#   Description:
+#       Personal multiplier for recipe item drop chances.
+#
+IndividualRates.Rate.Drop.Item.Recipe.Enabled = 0
+IndividualRates.Rate.Drop.Item.Recipe.Default = 1
+IndividualRates.Rate.Drop.Item.Recipe.Max = 10
+
+IndividualRates.Rate.Drop.Item.Recipe.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Recipe.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Recipe.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Recipe.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Recipe.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Recipe.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Pet
+#
+#   Player key:
+#       drop.pet
+#
+#   Description:
+#       Personal multiplier for miscellaneous vanity pet item drop chances.
+#
+IndividualRates.Rate.Drop.Item.Pet.Enabled = 0
+IndividualRates.Rate.Drop.Item.Pet.Default = 1
+IndividualRates.Rate.Drop.Item.Pet.Max = 10
+
+IndividualRates.Rate.Drop.Item.Pet.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Pet.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Pet.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Pet.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Pet.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Pet.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Item.Mount
+#
+#   Player key:
+#       drop.mount
+#
+#   Description:
+#       Personal multiplier for miscellaneous mount item drop chances.
+#
+IndividualRates.Rate.Drop.Item.Mount.Enabled = 0
+IndividualRates.Rate.Drop.Item.Mount.Default = 1
+IndividualRates.Rate.Drop.Item.Mount.Max = 10
+
+IndividualRates.Rate.Drop.Item.Mount.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Item.Mount.Unlock.Level = 80
+IndividualRates.Rate.Drop.Item.Mount.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Item.Mount.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Item.Mount.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Item.Mount.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Money
+#
+#   Player key:
+#       drop.money
+#
+#   Description:
+#       Personal multiplier for generated loot money.
+#       Caveat: group/shared loot has one generated loot object, so money is scaled once for that
+#       loot object rather than separately for every possible looter.
+#
+#   Default:
+#       Default = 1
+#       Max     = 5
+#
+IndividualRates.Rate.Drop.Money.Enabled = 1
+IndividualRates.Rate.Drop.Money.Default = 1
+IndividualRates.Rate.Drop.Money.Max = 5
+
+IndividualRates.Rate.Drop.Money.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Money.Unlock.Level = 80
+IndividualRates.Rate.Drop.Money.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Money.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Money.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Money.MaxLevel.MaxRate = 3
