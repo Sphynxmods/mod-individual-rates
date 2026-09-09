@@ -815,9 +815,10 @@ public:
         }
 
         emblemItemIds.clear();
-        for (std::string_view token : Acore::Tokenize(
+        std::string const emblemItemIdsValue =
             sConfigMgr->GetOption<std::string>("IndividualRates.Drop.Emblem.ItemIds",
-                "29434,40752,40753,45624,47241,49426"), ',', false))
+                "29434,40752,40753,45624,47241,49426");
+        for (std::string_view token : Acore::Tokenize(emblemItemIdsValue, ',', false))
         {
             token = Trim(token);
             if (Optional<uint32> itemId = Acore::StringTo<uint32>(token))
