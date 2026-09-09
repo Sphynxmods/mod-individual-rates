@@ -5,6 +5,7 @@
 #include "DBCStructure.h"
 #include "DatabaseEnv.h"
 #include "LootMgr.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -77,6 +78,11 @@ enum IndividualRate : uint8
     IR_DROP_PET,
     IR_DROP_MOUNT,
     IR_DROP_MONEY,
+    IR_DROP_EMBLEM,
+    IR_DUNGEON_RATE_LIMIT,
+    IR_DUNGEON_RATE_DISABLED,
+    IR_RAID_RATE_LIMIT,
+    IR_RAID_RATE_DISABLED,
     IR_MAX
 };
 
@@ -90,6 +96,8 @@ enum IndividualRateCategory : uint8
     IRC_PVP,
     IRC_DROPS,
     IRC_MONEY,
+    IRC_EMBLEMS,
+    IRC_LOOT_EXCEPTIONS,
     IRC_MAX
 };
 
@@ -124,7 +132,9 @@ static constexpr std::array<IndividualRateCategoryDefinition, IRC_MAX> CategoryD
     { "reputation", "Category.Reputation", "Reputation" },
     { "pvp", "Category.PvP", "PvP Rewards" },
     { "drops", "Category.Drops", "Drop Rates" },
-    { "money", "Category.Money", "Money" }
+    { "money", "Category.Money", "Money" },
+    { "emblems", "Category.Emblems", "Emblems" },
+    { "lootexceptions", "Category.LootExceptions", "Loot Exceptions" }
 }};
 
 static constexpr std::array<IndividualRateDefinition, IR_MAX> RateDefinitions =
@@ -178,7 +188,12 @@ static constexpr std::array<IndividualRateDefinition, IR_MAX> RateDefinitions =
     { "drop.recipe", "Rate.Drop.Item.Recipe", IRC_DROPS, 1.0f, 20.0f },
     { "drop.pet", "Rate.Drop.Item.Pet", IRC_DROPS, 1.0f, 20.0f },
     { "drop.mount", "Rate.Drop.Item.Mount", IRC_DROPS, 1.0f, 20.0f },
-    { "drop.money", "Rate.Drop.Money", IRC_MONEY, 5.0f, 20.0f }
+    { "drop.money", "Rate.Drop.Money", IRC_MONEY, 5.0f, 20.0f },
+    { "drop.emblem", "Rate.Drop.Emblem", IRC_EMBLEMS, 1.0f, 4.0f },
+    { "dungeon.rate.limit", "Rate.Drop.Exception.Dungeon.Limit", IRC_LOOT_EXCEPTIONS, 0.0f, 10.0f },
+    { "dungeon.rate.disabled", "Rate.Drop.Exception.Dungeon.Disabled", IRC_LOOT_EXCEPTIONS, 0.0f, 1.0f },
+    { "raid.rate.limit", "Rate.Drop.Exception.Raid.Limit", IRC_LOOT_EXCEPTIONS, 0.0f, 10.0f },
+    { "raid.rate.disabled", "Rate.Drop.Exception.Raid.Disabled", IRC_LOOT_EXCEPTIONS, 0.0f, 1.0f }
 }};
 
 struct IndividualRatesConfig
@@ -338,6 +353,85 @@ static float GetPlayerRate(Player const* player, IndividualRate rate)
         rateValue = data->AccountEnabled[rate] ? data->AccountRate[rate] : 1.0f;
 
     return std::min(rateValue, GetMaxAllowedRate(player, rate));
+}
+
+static std::set<uint32> emblemItemIds;
+
+static bool IsEmblemItem(uint32 itemId)
+{
+    return emblemItemIds.find(itemId) != emblemItemIds.end();
+}
+
+static bool IsWholeNumberRate(IndividualRate rate)
+{
+    switch (rate)
+    {
+        case IR_DROP_EMBLEM:
+        case IR_DUNGEON_RATE_LIMIT:
+        case IR_DUNGEON_RATE_DISABLED:
+        case IR_RAID_RATE_LIMIT:
+        case IR_RAID_RATE_DISABLED:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static float GetMinimumRate(IndividualRate rate)
+{
+    return rate == IR_DROP_EMBLEM ? 1.0f : 0.0f;
+}
+
+static float GetExceptionRate(Player const* player, IndividualRate rate)
+{
+    PlayerIndividualRates* data = GetRates(player);
+    if (!individualRates.Enabled || !data ||
+        !individualRates.CategoryEnabled[RateDefinitions[rate].Category] || !individualRates.RateEnabled[rate])
+    {
+        return 0.0f;
+    }
+
+    float rateValue = individualRates.DefaultRate[rate];
+    if (individualRates.CharacterRates && data->CharacterHasRate[rate])
+        rateValue = data->Enabled[rate] ? data->Rate[rate] : individualRates.DefaultRate[rate];
+    else if (individualRates.AccountRates && data->AccountHasRate[rate])
+        rateValue = data->AccountEnabled[rate] ? data->AccountRate[rate] : individualRates.DefaultRate[rate];
+
+    return std::min(rateValue, GetMaxAllowedRate(player, rate));
+}
+
+static void ApplyLootContextException(Player const* player, float& rate)
+{
+    if (!player || !player->GetMap())
+        return;
+
+    Map const* map = player->GetMap();
+    if (map->IsRaid())
+    {
+        if (GetExceptionRate(player, IR_RAID_RATE_DISABLED) > 0.0f)
+        {
+            rate = 1.0f;
+            return;
+        }
+
+        float limit = GetExceptionRate(player, IR_RAID_RATE_LIMIT);
+        if (limit > 0.0f)
+            rate = std::min(rate, limit);
+        return;
+    }
+
+    if (map->IsDungeon())
+    {
+        if (GetExceptionRate(player, IR_DUNGEON_RATE_DISABLED) > 0.0f)
+        {
+            rate = 1.0f;
+            return;
+        }
+
+        float limit = GetExceptionRate(player, IR_DUNGEON_RATE_LIMIT);
+        if (limit > 0.0f)
+            rate = std::min(rate, limit);
+    }
 }
 
 static uint32 ScaleUInt32(uint32 amount, float rate)
@@ -719,6 +813,16 @@ public:
             individualRates.MaxLevel[i] = sConfigMgr->GetOption<uint32>(maxLevelLevelKey, 70);
             individualRates.MaxLevelMaxRate[i] = sConfigMgr->GetOption<float>(maxLevelMaxRateKey, 3.0f);
         }
+
+        emblemItemIds.clear();
+        for (std::string_view token : Acore::Tokenize(
+            sConfigMgr->GetOption<std::string>("IndividualRates.Drop.Emblem.ItemIds",
+                "29434,40752,40753,45624,47241,49426"), ',', false))
+        {
+            token = Trim(token);
+            if (Optional<uint32> itemId = Acore::StringTo<uint32>(token))
+                emblemItemIds.insert(*itemId);
+        }
     }
 };
 
@@ -1044,8 +1148,23 @@ public:
         if (specificRate != IR_DROP_CHANCE)
             rate *= GetPlayerRate(player, specificRate);
 
+        ApplyLootContextException(player, rate);
         ScaleFloatRef(chance, rate);
         return true;
+    }
+
+    void OnBeforeDropAddItem(Player const* player, Loot& loot, bool /*canRate*/, uint16 /*lootMode*/,
+        LootStoreItem* lootStoreItem, LootStore const& /*store*/) override
+    {
+        if (!individualRates.Enabled || !lootStoreItem || !IsEmblemItem(lootStoreItem->itemid))
+            return;
+
+        float emblemRate = GetPlayerRate(player, IR_DROP_EMBLEM);
+        ApplyLootContextException(player, emblemRate);
+
+        uint32 copies = std::clamp<uint32>(static_cast<uint32>(std::round(emblemRate)), 1u, 4u);
+        for (uint32 i = 1; i < copies; ++i)
+            loot.AddItem(*lootStoreItem);
     }
 
     void OnBeforeUpdateArenaPoints(ArenaTeam* /*team*/, std::map<ObjectGuid, uint32>& points) override
@@ -1068,7 +1187,9 @@ public:
         if (!loot || !loot->gold || _scaledLootGuids.count(lootGuid.GetRawValue()))
             return;
 
-        ScaleUInt32Ref(loot->gold, GetPlayerRate(player, IR_DROP_MONEY));
+        float moneyRate = GetPlayerRate(player, IR_DROP_MONEY);
+        ApplyLootContextException(player, moneyRate);
+        ScaleUInt32Ref(loot->gold, moneyRate);
         _scaledLootGuids.insert(lootGuid.GetRawValue());
     }
 
@@ -1134,6 +1255,11 @@ public:
         handler->SendSysMessage("  .rate character enable|disable <key> - toggle one character override");
         handler->SendSysMessage("  .rate on|off <key> - alias for enable/disable");
         handler->SendSysMessage("  .rate lock / .rate unlock - toggle XP gain");
+        handler->SendSysMessage("  .rate set drop.emblem <1-4> - emblem count per loot (whole numbers)");
+        handler->SendSysMessage("  .rate set dungeon.rate.limit <0-10> - cap your loot multiplier in dungeons");
+        handler->SendSysMessage("  .rate set dungeon.rate.disabled <0|1> - force loot x1 in dungeons");
+        handler->SendSysMessage("  .rate set raid.rate.limit <0-10> - cap your loot multiplier in raids");
+        handler->SendSysMessage("  .rate set raid.rate.disabled <0|1> - force loot x1 in raids");
         return true;
     }
 
@@ -1387,9 +1513,16 @@ private:
             return false;
         }
 
-        if (value < 0.0f || value > maxRate)
+        float minRate = GetMinimumRate(rate);
+        if (IsWholeNumberRate(rate) && std::floor(value) != value)
         {
-            handler->PSendSysMessage("Rate must be between 0 and {}.", maxRate);
+            handler->PSendSysMessage("[Rates] {} only accepts whole numbers.", RateDefinitions[index].CommandKey);
+            return false;
+        }
+
+        if (value < minRate || value > maxRate)
+        {
+            handler->PSendSysMessage("Rate must be between {} and {}.", minRate, maxRate);
             return false;
         }
 
@@ -1435,7 +1568,11 @@ private:
             if (IsMaxLevelActive(player, IndividualRate(i)) && value > maxRate)
                 continue;
 
-            if (value < 0.0f || value > maxRate)
+            if (IsWholeNumberRate(IndividualRate(i)) && std::floor(value) != value)
+                continue;
+
+            float minRate = GetMinimumRate(IndividualRate(i));
+            if (value < minRate || value > maxRate)
                 continue;
 
             if (account)

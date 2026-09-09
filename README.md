@@ -21,6 +21,10 @@ account unlocks, max-level caps, and XP locking.
 - Decimal rates such as `0.5`, `1.3`, and `1.5`.
 - XP lock with `.rate lock` and `.rate unlock`.
 - Migration support for old `mod-individual-xp` character data.
+- Emblem loot counts: control how many emblem items (Badge of Justice and the
+  WotLK Emblems) appear when an emblem drops, whole numbers 1-4.
+- Loot exceptions: per-player rate limits and x1-disable toggles for dungeons
+  and raids that cover item drops, emblem counts, and loot money.
 - Server-owner controls for every category and every individual rate.
 
 ## Supported Rates
@@ -91,6 +95,25 @@ These multiply with the XP source rates above.
 - `drop.pet`
 - `drop.mount`
 - `drop.money`
+
+### Emblems
+
+- `drop.emblem` (whole numbers 1-4, default 1, max 4)
+
+Emblems are recognised by item ID through `IndividualRates.Drop.Emblem.ItemIds`.
+The default list contains Badge of Justice (29434) and the Emblems of Heroism
+(40752), Valor (40753), Conquest (45624), Triumph (47241), and Frost (49426).
+
+### Loot Exceptions
+
+- `dungeon.rate.limit` (whole numbers 0-10, default 0 = no limit)
+- `dungeon.rate.disabled` (0 or 1, default 0)
+- `raid.rate.limit` (whole numbers 0-10, default 0 = no limit)
+- `raid.rate.disabled` (0 or 1, default 0)
+
+A rate limit caps the player's effective loot multiplier inside dungeons/raids.
+A disabled toggle forces loot to x1 in that context. Both apply to item drop
+chances, emblem counts, and loot money.
 
 ## Important World Config Note
 
@@ -251,6 +274,8 @@ reputation
 pvp
 drops
 money
+emblems
+lootexceptions
 ```
 
 ## Examples
@@ -289,6 +314,27 @@ Return the account and character to server defaults:
 
 ```text
 .rate reset drops
+```
+
+### Emblems and Loot Exceptions
+
+Set every emblem drop to double count:
+
+```text
+.rate set drop.emblem 2
+```
+
+Run all drops at x5 but cap dungeon loot back to x2:
+
+```text
+.rate set drops 5
+.rate set dungeon.rate.limit 2
+```
+
+Force all raid loot to x1:
+
+```text
+.rate set raid.rate.disabled 1
 ```
 
 ## Migration from mod-individual-xp

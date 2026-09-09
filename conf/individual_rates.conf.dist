@@ -76,6 +76,14 @@
 #       Disable or enable XP gain for the character. In account-rate mode, the XP lock is shared
 #       across the account.
 #
+#   .rate set drop.emblem <1-4>
+#       Set how many emblem items appear when an emblem item drops. Whole numbers only.
+#
+#   .rate set dungeon.rate.limit <0-10> / .rate set dungeon.rate.disabled <0|1>
+#   .rate set raid.rate.limit <0-10> / .rate set raid.rate.disabled <0|1>
+#       Cap (or force to x1) the player's loot rates inside dungeons and raids. These cover item
+#       drop chances, emblem counts, and loot money.
+#
 # XP level bracket defaults:
 #   The XP level bracket rates multiply with XP source rates. For example, if xp.kill is x2 and
 #   xp.level.20-29 is x0.5, kill XP from level 20 through 29 becomes x1 overall.
@@ -126,6 +134,13 @@
 #   - Drop chance multipliers for quality groups, quest items, recipes, pets, mounts, referenced
 #     loot, and a general drop chance multiplier.
 #   - Loot money.
+#   - Emblem loot: an extra rate that controls how many emblem items (Badge of Justice and the
+#     Emblems of Heroism/Valor/Conquest/Triumph/Frost) are added to each loot. Values are whole
+#     numbers 1-4, default 1, so a player on x2 gets two emblems when one would normally drop.
+#   - Loot exceptions: per-player dungeon and raid controls. A rate limit caps the effective loot
+#     multiplier inside dungeons/raids (for example x5 loot outside reverts to the limit inside),
+#     and a disabled toggle forces loot to x1 in that context. These apply to item drops, emblem
+#     counts, and loot money.
 #   - Account rates, optional character-specific overrides, account unlock ladders, per-character
 #     max-level caps, and XP locking.
 ###################################################################################################
@@ -511,6 +526,49 @@ IndividualRates.Category.Money.Unlock.Steps =
 IndividualRates.Category.Money.MaxLevel.Enabled = 0
 IndividualRates.Category.Money.MaxLevel.Level = 70
 IndividualRates.Category.Money.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.Emblems
+#
+#   Controls the personal emblem loot count rate (drop.emblem). This category is kept separate
+#   from the Drops category so `.rate set drops <value>` never touches emblem counts.
+#
+#   Commands:
+#       .rate set emblems <1..4>
+#       .rate set drop.emblem <1..4>
+#
+IndividualRates.Category.Emblems.Enabled = 1
+
+IndividualRates.Category.Emblems.Unlock.Enabled = 0
+IndividualRates.Category.Emblems.Unlock.Level = 80
+IndividualRates.Category.Emblems.Unlock.Steps =
+
+IndividualRates.Category.Emblems.MaxLevel.Enabled = 0
+IndividualRates.Category.Emblems.MaxLevel.Level = 70
+IndividualRates.Category.Emblems.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Category.LootExceptions
+#
+#   Controls the personal dungeon/raid loot exception rates. Setting a dungeon or raid rate limit
+#   caps the player's effective loot multiplier inside that context (item drops, emblem counts,
+#   and loot money). Setting a disabled toggle to 1 forces loot to x1 in that context.
+#
+#   Commands:
+#       .rate set dungeon.rate.limit <0..10>
+#       .rate set dungeon.rate.disabled <0|1>
+#       .rate set raid.rate.limit <0..10>
+#       .rate set raid.rate.disabled <0|1>
+#
+IndividualRates.Category.LootExceptions.Enabled = 1
+
+IndividualRates.Category.LootExceptions.Unlock.Enabled = 0
+IndividualRates.Category.LootExceptions.Unlock.Level = 80
+IndividualRates.Category.LootExceptions.Unlock.Steps =
+
+IndividualRates.Category.LootExceptions.MaxLevel.Enabled = 0
+IndividualRates.Category.LootExceptions.MaxLevel.Level = 70
+IndividualRates.Category.LootExceptions.MaxLevel.MaxRate = 3
 
 ###################################################################################################
 # EXPERIENCE RATES
@@ -1831,3 +1889,165 @@ IndividualRates.Rate.Drop.Money.Unlock.Steps =
 IndividualRates.Rate.Drop.Money.MaxLevel.Enabled = 0
 IndividualRates.Rate.Drop.Money.MaxLevel.Level = 70
 IndividualRates.Rate.Drop.Money.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Emblem
+#
+#   Player key:
+#       drop.emblem
+#
+#   Description:
+#       Personal emblem loot count. When a loot roll includes one of the emblem items listed in
+#       IndividualRates.Drop.Emblem.ItemIds, this rate decides how many copies are added: 1 keeps
+#       the normal single emblem, 2 adds a second, and so on up to 4.
+#
+#       Only whole numbers 1-4 are accepted.
+#
+#   Default:
+#       Default = 1
+#       Max     = 4
+#
+IndividualRates.Rate.Drop.Emblem.Enabled = 1
+IndividualRates.Rate.Drop.Emblem.Default = 1
+IndividualRates.Rate.Drop.Emblem.Max = 4
+
+IndividualRates.Rate.Drop.Emblem.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Emblem.Unlock.Level = 80
+IndividualRates.Rate.Drop.Emblem.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Emblem.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Emblem.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Emblem.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Drop.Emblem.ItemIds
+#
+#   Description:
+#       Comma-separated item IDs treated as emblems for the drop.emblem rate.
+#       Pre-filled with Badge of Justice and the WotLK Emblems of Heroism, Valor, Conquest,
+#       Triumph, and Frost. Add any custom emblem-like token entries here.
+#
+#   Default:
+#       29434,40752,40753,45624,47241,49426
+#
+IndividualRates.Drop.Emblem.ItemIds = 29434,40752,40753,45624,47241,49426
+
+###################################################################################################
+# LOOT EXCEPTIONS
+#
+# These per-player rates control how the personal drop rates behave inside dungeons and raids.
+# A rate limit caps the effective loot multiplier in that context, and a disabled toggle forces
+# loot to x1. Both apply to item drop chances, emblem counts, and loot money.
+#
+# Example:
+#   A player runs `.rate set drops 5` and `.rate set dungeon.rate.limit 2`.
+#   Outside dungeons all drops act at x5. Inside a dungeon the effective drop multiplier is capped
+#   at x2, even though the player still has x5 configured.
+#
+#   A player runs `.rate set dungeon.rate.disabled 1`.
+#   All loot inside dungeons is forced to x1.
+###################################################################################################
+
+#
+# IndividualRates.Rate.Drop.Exception.Dungeon.Limit
+#
+#   Player key:
+#       dungeon.rate.limit
+#
+#   Description:
+#       Highest effective loot multiplier allowed in dungeons. 0 (the default) means no limit.
+#       Only whole numbers 0-10 are accepted.
+#
+#   Default:
+#       Default = 0
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Enabled = 1
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Default = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Max = 10
+
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Unlock.Level = 80
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Exception.Dungeon.Limit.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Exception.Dungeon.Disabled
+#
+#   Player key:
+#       dungeon.rate.disabled
+#
+#   Description:
+#       When set to 1, all loot in dungeons is forced to x1. 0 (the default) leaves the normal
+#       personal rates active. Only 0 or 1 are accepted.
+#
+#   Default:
+#       Default = 0
+#       Max     = 1
+#
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Enabled = 1
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Default = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Max = 1
+
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Unlock.Level = 80
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Exception.Dungeon.Disabled.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Exception.Raid.Limit
+#
+#   Player key:
+#       raid.rate.limit
+#
+#   Description:
+#       Highest effective loot multiplier allowed in raids. 0 (the default) means no limit.
+#       Only whole numbers 0-10 are accepted.
+#
+#   Default:
+#       Default = 0
+#       Max     = 10
+#
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Enabled = 1
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Default = 0
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Max = 10
+
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Unlock.Level = 80
+IndividualRates.Rate.Drop.Exception.Raid.Limit.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Exception.Raid.Limit.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Raid.Limit.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Exception.Raid.Limit.MaxLevel.MaxRate = 3
+
+#
+# IndividualRates.Rate.Drop.Exception.Raid.Disabled
+#
+#   Player key:
+#       raid.rate.disabled
+#
+#   Description:
+#       When set to 1, all loot in raids is forced to x1. 0 (the default) leaves the normal
+#       personal rates active. Only 0 or 1 are accepted.
+#
+#   Default:
+#       Default = 0
+#       Max     = 1
+#
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Enabled = 1
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Default = 0
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Max = 1
+
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Unlock.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Unlock.Level = 80
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.Unlock.Steps =
+
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.MaxLevel.Enabled = 0
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.MaxLevel.Level = 70
+IndividualRates.Rate.Drop.Exception.Raid.Disabled.MaxLevel.MaxRate = 3
