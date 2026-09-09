@@ -355,4 +355,4 @@ Existing `individual_rates` rows are never overwritten.
 
 ## License
 
-GPL-2.0-or-later. See `LICENSE`.
+GNU Affero General Public License v3.0
